@@ -6,14 +6,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 你的 Lark 应用配置（和之前一样）
+// 你的 Lark 应用配置
 const LARK_APP_ID = 'cli_a930dc1e38f85eef';
 const LARK_APP_SECRET = 'JbXSDhF6SSHGZNpnA1ziAdoBVX7S1D6B';
 
 // 多维表配置
 const APP_TOKEN = 'YQnObs64caRIz4svewjlrtBFgoc';
-const SEED_TABLE_ID = '【请替换为种子用户表的ID】';  // 种子用户表
-const REDEEM_TABLE_ID = '【请替换为唯一码核销表的ID】';  // 核销表
+// 修正后的表 ID（只取 tbl 开头到 & 之前的部分）
+const SEED_TABLE_ID = 'tblus0Qa3Uj4artl';      // 种子用户表
+const REDEEM_TABLE_ID = 'tblgHMKeMODfXUD6';    // 唯一码核销表
 
 // 缓存 token
 let cachedToken = null;
@@ -53,6 +54,8 @@ async function getTenantAccessToken() {
 app.post('/query-by-code', async (req, res) => {
     try {
         const { code } = req.body;
+        console.log('查询核销码:', code);
+        
         if (!code) {
             return res.status(400).json({ error: '缺少核销码' });
         }
@@ -84,18 +87,48 @@ app.post('/query-by-code', async (req, res) => {
         });
 
         const result = await response.json();
+        console.log('Lark 查询返回:', JSON.stringify(result, null, 2));
         
         if (result.code === 0 && result.data && result.data.items && result.data.items.length > 0) {
             const fields = result.data.items[0].fields;
+            
+            // 解析字段值（处理 Lark 返回的复杂格式）
+            function extractValue(field) {
+                if (!field) return null;
+                if (typeof field === 'string') return field;
+                if (Array.isArray(field)) {
+                    if (field.length === 0) return null;
+                    const first = field[0];
+                    if (typeof first === 'string') return first;
+                    if (first && first.text) return first.text;
+                    return String(first);
+                }
+                if (field.value !== undefined) {
+                    const val = field.value;
+                    if (Array.isArray(val) && val.length > 0) {
+                        if (typeof val[0] === 'string') return val[0];
+                        if (val[0] && val[0].text) return val[0].text;
+                        return String(val[0]);
+                    }
+                    return String(val);
+                }
+                if (field.text) return field.text;
+                return String(field);
+            }
+            
+            const name = extractValue(fields["推荐人姓名"]);
+            const phone = extractValue(fields["推荐人电话"]);
+            
             res.json({
                 success: true,
                 data: {
-                    code: fields["唯一核销码"],
-                    name: fields["推荐人姓名"],
-                    phone: fields["推荐人电话"]
+                    code: code,
+                    name: name || '—',
+                    phone: phone || '—'
                 }
             });
         } else {
+            console.log('未找到核销码:', code);
             res.json({ success: false, message: '未找到该核销码' });
         }
     } catch (error) {
@@ -109,6 +142,8 @@ app.post('/submit-redeem', async (req, res) => {
     try {
         const { redeemCode, referrerName, referrerPhone, redeemerName, redeemerPhone, orderRemark } = req.body;
         
+        console.log('提交核销:', { redeemCode, referrerName, referrerPhone, redeemerName, redeemerPhone });
+        
         if (!redeemCode || !referrerName || !referrerPhone || !redeemerName || !redeemerPhone) {
             return res.status(400).json({ error: '缺少必填字段' });
         }
@@ -118,7 +153,7 @@ app.post('/submit-redeem', async (req, res) => {
             return res.status(500).json({ error: '无法获取访问令牌' });
         }
 
-        // 获取当前时间戳（东八区）
+        // 获取当前时间戳
         const now = new Date();
         const timestamp = now.getTime();
         
@@ -144,6 +179,7 @@ app.post('/submit-redeem', async (req, res) => {
         });
 
         const result = await response.json();
+        console.log('提交结果:', result);
         
         if (result.code === 0) {
             res.json({ success: true });
@@ -164,4 +200,6 @@ app.get('/', (req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Proxy running on port ${port}`);
+    console.log(`种子用户表 ID: ${SEED_TABLE_ID}`);
+    console.log(`核销表 ID: ${REDEEM_TABLE_ID}`);
 });

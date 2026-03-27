@@ -53,13 +53,9 @@ async function getTenantAccessToken() {
 function extractFieldValue(field) {
     if (!field) return null;
     
-    // 如果是字符串，直接返回
     if (typeof field === 'string') return field;
-    
-    // 如果是数字，转成字符串
     if (typeof field === 'number') return String(field);
     
-    // 如果是数组
     if (Array.isArray(field)) {
         if (field.length === 0) return null;
         const first = field[0];
@@ -69,11 +65,8 @@ function extractFieldValue(field) {
         return String(first);
     }
     
-    // 如果是对象，处理 Lark 的特殊格式
     if (typeof field === 'object') {
-        // 处理 {text: "xxx"} 格式
         if (field.text !== undefined) return field.text;
-        // 处理 {value: xxx} 格式
         if (field.value !== undefined) {
             const val = field.value;
             if (Array.isArray(val) && val.length > 0) {
@@ -86,7 +79,6 @@ function extractFieldValue(field) {
             if (typeof val === 'number') return String(val);
             return String(val);
         }
-        // 处理关联记录 {link_record_ids: [...]}
         if (field.link_record_ids !== undefined && field.link_record_ids.length > 0) {
             return `关联记录(${field.link_record_ids.length})`;
         }
@@ -94,6 +86,15 @@ function extractFieldValue(field) {
     }
     
     return String(field);
+}
+
+// 将字符串转换为数字（用于电话字段）
+function toNumber(value) {
+    if (!value) return null;
+    // 移除所有非数字字符
+    const numStr = String(value).replace(/\D/g, '');
+    if (numStr === '') return null;
+    return parseInt(numStr, 10);
 }
 
 // 根据唯一核销码查询推荐人信息
@@ -182,14 +183,20 @@ app.post('/submit-redeem', async (req, res) => {
         const now = new Date();
         const timestamp = now.getTime();
         
-        // 构建提交数据 - 电话字段保持为字符串，Lark 会自动转换
+        // 🔧 关键修复：将电话字段转换为数字
+        const referrerPhoneNumber = toNumber(referrerPhone);
+        const redeemerPhoneNumber = toNumber(redeemerPhone);
+        
+        console.log('转换后的电话:', { referrerPhoneNumber, redeemerPhoneNumber });
+        
+        // 构建提交数据
         const newRecord = {
             "核销日期": timestamp,
             "核销码": redeemCode,
             "推荐人姓名": referrerName,
-            "推荐人电话": referrerPhone,
+            "推荐人电话": referrerPhoneNumber,  // 数字类型
             "兑换人姓名": redeemerName,
-            "兑换人电话": redeemerPhone,
+            "兑换人电话": redeemerPhoneNumber,  // 数字类型
             "订单备注": orderRemark || ''
         };
 
@@ -223,7 +230,6 @@ app.post('/submit-redeem', async (req, res) => {
 // 健康检查
 app.get('/', (req, res) => {
     res.send('Lark Redeem Proxy is running\n');
-    res.send(`种子用户表: ${SEED_TABLE_ID}\n核销表: ${REDEEM_TABLE_ID}`);
 });
 
 const port = process.env.PORT || 3000;

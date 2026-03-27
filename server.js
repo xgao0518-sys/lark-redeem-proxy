@@ -12,7 +12,6 @@ const LARK_APP_SECRET = 'JbXSDhF6SSHGZNpnA1ziAdoBVX7S1D6B';
 
 // 多维表配置
 const APP_TOKEN = 'YQnObs64caRIz4svewjlrtBFgoc';
-// 修正后的表 ID（只取 tbl 开头到 & 之前的部分）
 const SEED_TABLE_ID = 'tblus0Qa3Uj4artl';      // 种子用户表
 const REDEEM_TABLE_ID = 'tblgHMKeMODfXUD6';    // 唯一码核销表
 
@@ -48,6 +47,53 @@ async function getTenantAccessToken() {
         console.error('获取 token 错误:', error);
         return null;
     }
+}
+
+// 通用字段值解析函数
+function extractFieldValue(field) {
+    if (!field) return null;
+    
+    // 如果是字符串，直接返回
+    if (typeof field === 'string') return field;
+    
+    // 如果是数字，转成字符串
+    if (typeof field === 'number') return String(field);
+    
+    // 如果是数组
+    if (Array.isArray(field)) {
+        if (field.length === 0) return null;
+        const first = field[0];
+        if (typeof first === 'string') return first;
+        if (typeof first === 'number') return String(first);
+        if (first && first.text) return first.text;
+        return String(first);
+    }
+    
+    // 如果是对象，处理 Lark 的特殊格式
+    if (typeof field === 'object') {
+        // 处理 {text: "xxx"} 格式
+        if (field.text !== undefined) return field.text;
+        // 处理 {value: xxx} 格式
+        if (field.value !== undefined) {
+            const val = field.value;
+            if (Array.isArray(val) && val.length > 0) {
+                if (typeof val[0] === 'string') return val[0];
+                if (typeof val[0] === 'number') return String(val[0]);
+                if (val[0] && val[0].text) return val[0].text;
+                return String(val[0]);
+            }
+            if (typeof val === 'string') return val;
+            if (typeof val === 'number') return String(val);
+            return String(val);
+        }
+        // 处理关联记录 {link_record_ids: [...]}
+        if (field.link_record_ids !== undefined && field.link_record_ids.length > 0) {
+            return `关联记录(${field.link_record_ids.length})`;
+        }
+        return JSON.stringify(field);
+    }
+    
+    return String(field);
 }
 
 // 根据唯一核销码查询推荐人信息
@@ -87,44 +133,23 @@ app.post('/query-by-code', async (req, res) => {
         });
 
         const result = await response.json();
-        console.log('Lark 查询返回:', JSON.stringify(result, null, 2));
+        console.log('Lark 查询结果:', JSON.stringify(result, null, 2));
         
         if (result.code === 0 && result.data && result.data.items && result.data.items.length > 0) {
             const fields = result.data.items[0].fields;
             
-            // 解析字段值（处理 Lark 返回的复杂格式）
-            function extractValue(field) {
-                if (!field) return null;
-                if (typeof field === 'string') return field;
-                if (Array.isArray(field)) {
-                    if (field.length === 0) return null;
-                    const first = field[0];
-                    if (typeof first === 'string') return first;
-                    if (first && first.text) return first.text;
-                    return String(first);
-                }
-                if (field.value !== undefined) {
-                    const val = field.value;
-                    if (Array.isArray(val) && val.length > 0) {
-                        if (typeof val[0] === 'string') return val[0];
-                        if (val[0] && val[0].text) return val[0].text;
-                        return String(val[0]);
-                    }
-                    return String(val);
-                }
-                if (field.text) return field.text;
-                return String(field);
-            }
+            const extractedCode = extractFieldValue(fields["唯一核销码"]);
+            const extractedName = extractFieldValue(fields["推荐人姓名"]);
+            const extractedPhone = extractFieldValue(fields["推荐人电话"]);
             
-            const name = extractValue(fields["推荐人姓名"]);
-            const phone = extractValue(fields["推荐人电话"]);
+            console.log('解析后:', { code: extractedCode, name: extractedName, phone: extractedPhone });
             
             res.json({
                 success: true,
                 data: {
-                    code: code,
-                    name: name || '—',
-                    phone: phone || '—'
+                    code: extractedCode || code,
+                    name: extractedName || '—',
+                    phone: extractedPhone || '—'
                 }
             });
         } else {
@@ -157,6 +182,7 @@ app.post('/submit-redeem', async (req, res) => {
         const now = new Date();
         const timestamp = now.getTime();
         
+        // 构建提交数据 - 电话字段保持为字符串，Lark 会自动转换
         const newRecord = {
             "核销日期": timestamp,
             "核销码": redeemCode,
@@ -166,6 +192,8 @@ app.post('/submit-redeem', async (req, res) => {
             "兑换人电话": redeemerPhone,
             "订单备注": orderRemark || ''
         };
+
+        console.log('提交到 Lark 的数据:', JSON.stringify(newRecord, null, 2));
 
         const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${REDEEM_TABLE_ID}/records`;
         
@@ -179,12 +207,12 @@ app.post('/submit-redeem', async (req, res) => {
         });
 
         const result = await response.json();
-        console.log('提交结果:', result);
+        console.log('Lark 提交结果:', JSON.stringify(result, null, 2));
         
         if (result.code === 0) {
             res.json({ success: true });
         } else {
-            res.json({ success: false, message: result.msg });
+            res.json({ success: false, message: result.msg || '提交失败' });
         }
     } catch (error) {
         console.error('提交错误:', error);
@@ -194,7 +222,8 @@ app.post('/submit-redeem', async (req, res) => {
 
 // 健康检查
 app.get('/', (req, res) => {
-    res.send('Lark Redeem Proxy is running');
+    res.send('Lark Redeem Proxy is running\n');
+    res.send(`种子用户表: ${SEED_TABLE_ID}\n核销表: ${REDEEM_TABLE_ID}`);
 });
 
 const port = process.env.PORT || 3000;

@@ -120,7 +120,7 @@ app.post('/query-by-code', async (req, res) => {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                field_names: ["唯一核销码", "推荐人姓名", "推荐人电话", "券码使用次数"],
+                field_names: ["唯一核销码", "推荐人姓名", "推荐人电话", "券码使用次数", "限定兑换次数"],
                 filter: {
                     conjunction: "and",
                     conditions: [{
@@ -142,8 +142,35 @@ app.post('/query-by-code', async (req, res) => {
             const extractedName = extractFieldValue(fields["推荐人姓名"]);
             const extractedPhone = extractFieldValue(fields["推荐人电话"]);
             const extractedUsageCount = extractFieldValue(fields["券码使用次数"]) || '0';
+            const extractedLimitCount = extractFieldValue(fields["限定兑换次数"]);
             
-            console.log('解析后:', { code: extractedCode, name: extractedName, phone: extractedPhone, usageCount: extractedUsageCount });
+            // 解析限定兑换次数（如果为空或0，则不限制）
+            let limitCount = null;
+            if (extractedLimitCount && extractedLimitCount !== '' && extractedLimitCount !== 'null') {
+                const parsed = parseInt(extractedLimitCount, 10);
+                if (!isNaN(parsed) && parsed > 0) {
+                    limitCount = parsed;
+                }
+            }
+            
+            const currentUsage = parseInt(extractedUsageCount, 10) || 0;
+            
+            // 检查是否已达到使用次数上限
+            let canRedeem = true;
+            let limitMessage = null;
+            if (limitCount !== null && currentUsage >= limitCount) {
+                canRedeem = false;
+                limitMessage = `This redemption code has reached its usage limit (${currentUsage}/${limitCount}). Please contact your inviter.`;
+            }
+            
+            console.log('解析后:', { 
+                code: extractedCode, 
+                name: extractedName, 
+                phone: extractedPhone, 
+                usageCount: currentUsage,
+                limitCount: limitCount,
+                canRedeem: canRedeem
+            });
             
             res.json({
                 success: true,
@@ -151,7 +178,10 @@ app.post('/query-by-code', async (req, res) => {
                     code: extractedCode || code,
                     name: extractedName || '—',
                     phone: extractedPhone || '—',
-                    usageCount: extractedUsageCount
+                    usageCount: currentUsage,
+                    limitCount: limitCount,
+                    canRedeem: canRedeem,
+                    limitMessage: limitMessage
                 }
             });
         } else {
@@ -233,7 +263,7 @@ app.post('/submit-redeem', async (req, res) => {
 // 更新种子用户的券码使用次数
 async function updateUsageCount(redeemCode, token) {
     try {
-        // 先查询该核销码对应的记录ID
+        // 先查询该核销码对应的记录ID和当前使用次数
         const searchUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${SEED_TABLE_ID}/records/search`;
         
         const searchResponse = await fetch(searchUrl, {

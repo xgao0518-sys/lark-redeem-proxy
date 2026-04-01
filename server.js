@@ -163,6 +163,72 @@ app.post('/query-by-code', async (req, res) => {
     }
 });
 
+// 查询核销码的使用次数
+app.post('/query-usage-count', async (req, res) => {
+    try {
+        const { code } = req.body;
+        console.log('查询使用次数，核销码:', code);
+        
+        if (!code) {
+            return res.status(400).json({ error: '缺少核销码' });
+        }
+
+        const token = await getTenantAccessToken();
+        if (!token) {
+            return res.status(500).json({ error: '无法获取访问令牌' });
+        }
+
+        // 从种子用户表查询
+        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${SEED_TABLE_ID}/records/search`;
+        
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                field_names: ["唯一核销码", "券码使用次数"],
+                filter: {
+                    conjunction: "and",
+                    conditions: [{
+                        field_name: "唯一核销码",
+                        operator: "is",
+                        value: [code]
+                    }]
+                }
+            })
+        });
+
+        const result = await response.json();
+        console.log('查询使用次数结果:', JSON.stringify(result, null, 2));
+        
+        if (result.code === 0 && result.data && result.data.items && result.data.items.length > 0) {
+            const fields = result.data.items[0].fields;
+            // 解析使用次数字段（可能是数字或对象）
+            let usageCount = 0;
+            const countField = fields["券码使用次数"];
+            if (typeof countField === 'number') {
+                usageCount = countField;
+            } else if (countField && countField.value !== undefined) {
+                usageCount = Number(countField.value) || 0;
+            } else if (countField) {
+                usageCount = Number(countField) || 0;
+            }
+            
+            res.json({
+                success: true,
+                usageCount: usageCount
+            });
+        } else {
+            res.json({ success: false, message: '未找到该核销码' });
+        }
+    } catch (error) {
+        console.error('查询使用次数错误:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // 提交核销记录
 app.post('/submit-redeem', async (req, res) => {
     try {

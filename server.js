@@ -91,7 +91,6 @@ function extractFieldValue(field) {
 // 将字符串转换为数字（用于电话字段）
 function toNumber(value) {
     if (!value) return null;
-    // 移除所有非数字字符
     const numStr = String(value).replace(/\D/g, '');
     if (numStr === '') return null;
     return parseInt(numStr, 10);
@@ -121,7 +120,7 @@ app.post('/query-by-code', async (req, res) => {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                field_names: ["唯一核销码", "推荐人姓名", "推荐人电话"],
+                field_names: ["唯一核销码", "推荐人姓名", "推荐人电话", "券码使用次数"],
                 filter: {
                     conjunction: "and",
                     conditions: [{
@@ -142,89 +141,25 @@ app.post('/query-by-code', async (req, res) => {
             const extractedCode = extractFieldValue(fields["唯一核销码"]);
             const extractedName = extractFieldValue(fields["推荐人姓名"]);
             const extractedPhone = extractFieldValue(fields["推荐人电话"]);
+            const extractedUsageCount = extractFieldValue(fields["券码使用次数"]) || '0';
             
-            console.log('解析后:', { code: extractedCode, name: extractedName, phone: extractedPhone });
+            console.log('解析后:', { code: extractedCode, name: extractedName, phone: extractedPhone, usageCount: extractedUsageCount });
             
             res.json({
                 success: true,
                 data: {
                     code: extractedCode || code,
                     name: extractedName || '—',
-                    phone: extractedPhone || '—'
+                    phone: extractedPhone || '—',
+                    usageCount: extractedUsageCount
                 }
             });
         } else {
             console.log('未找到核销码:', code);
-            res.json({ success: false, message: '未找到该核销码' });
+            res.json({ success: false, message: 'Code not found' });
         }
     } catch (error) {
         console.error('查询错误:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 查询核销码的使用次数
-app.post('/query-usage-count', async (req, res) => {
-    try {
-        const { code } = req.body;
-        console.log('查询使用次数，核销码:', code);
-        
-        if (!code) {
-            return res.status(400).json({ error: '缺少核销码' });
-        }
-
-        const token = await getTenantAccessToken();
-        if (!token) {
-            return res.status(500).json({ error: '无法获取访问令牌' });
-        }
-
-        // 从种子用户表查询
-        const url = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${SEED_TABLE_ID}/records/search`;
-        
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                field_names: ["唯一核销码", "券码使用次数"],
-                filter: {
-                    conjunction: "and",
-                    conditions: [{
-                        field_name: "唯一核销码",
-                        operator: "is",
-                        value: [code]
-                    }]
-                }
-            })
-        });
-
-        const result = await response.json();
-        console.log('查询使用次数结果:', JSON.stringify(result, null, 2));
-        
-        if (result.code === 0 && result.data && result.data.items && result.data.items.length > 0) {
-            const fields = result.data.items[0].fields;
-            // 解析使用次数字段（可能是数字或对象）
-            let usageCount = 0;
-            const countField = fields["券码使用次数"];
-            if (typeof countField === 'number') {
-                usageCount = countField;
-            } else if (countField && countField.value !== undefined) {
-                usageCount = Number(countField.value) || 0;
-            } else if (countField) {
-                usageCount = Number(countField) || 0;
-            }
-            
-            res.json({
-                success: true,
-                usageCount: usageCount
-            });
-        } else {
-            res.json({ success: false, message: '未找到该核销码' });
-        }
-    } catch (error) {
-        console.error('查询使用次数错误:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -249,7 +184,7 @@ app.post('/submit-redeem', async (req, res) => {
         const now = new Date();
         const timestamp = now.getTime();
         
-        // 🔧 关键修复：将电话字段转换为数字
+        // 将电话字段转换为数字
         const referrerPhoneNumber = toNumber(referrerPhone);
         const redeemerPhoneNumber = toNumber(redeemerPhone);
         
@@ -260,9 +195,9 @@ app.post('/submit-redeem', async (req, res) => {
             "核销日期": timestamp,
             "核销码": redeemCode,
             "推荐人姓名": referrerName,
-            "推荐人电话": referrerPhoneNumber,  // 数字类型
+            "推荐人电话": referrerPhoneNumber,
             "兑换人姓名": redeemerName,
-            "兑换人电话": redeemerPhoneNumber,  // 数字类型
+            "兑换人电话": redeemerPhoneNumber,
             "订单备注": orderRemark || ''
         };
 
@@ -283,6 +218,8 @@ app.post('/submit-redeem', async (req, res) => {
         console.log('Lark 提交结果:', JSON.stringify(result, null, 2));
         
         if (result.code === 0) {
+            // 提交成功后，更新种子用户表的券码使用次数
+            await updateUsageCount(redeemCode, token);
             res.json({ success: true });
         } else {
             res.json({ success: false, message: result.msg || '提交失败' });
@@ -293,9 +230,64 @@ app.post('/submit-redeem', async (req, res) => {
     }
 });
 
+// 更新种子用户的券码使用次数
+async function updateUsageCount(redeemCode, token) {
+    try {
+        // 先查询该核销码对应的记录ID
+        const searchUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${SEED_TABLE_ID}/records/search`;
+        
+        const searchResponse = await fetch(searchUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                field_names: ["唯一核销码", "券码使用次数"],
+                filter: {
+                    conjunction: "and",
+                    conditions: [{
+                        field_name: "唯一核销码",
+                        operator: "is",
+                        value: [redeemCode]
+                    }]
+                }
+            })
+        });
+        
+        const searchResult = await searchResponse.json();
+        
+        if (searchResult.code === 0 && searchResult.data && searchResult.data.items && searchResult.data.items.length > 0) {
+            const recordId = searchResult.data.items[0].record_id;
+            const currentCount = parseInt(extractFieldValue(searchResult.data.items[0].fields["券码使用次数"]) || '0', 10);
+            const newCount = currentCount + 1;
+            
+            // 更新使用次数
+            const updateUrl = `https://open.larksuite.com/open-apis/bitable/v1/apps/${APP_TOKEN}/tables/${SEED_TABLE_ID}/records/${recordId}`;
+            
+            await fetch(updateUrl, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    fields: {
+                        "券码使用次数": newCount
+                    }
+                })
+            });
+            
+            console.log(`更新使用次数: ${redeemCode} -> ${newCount}`);
+        }
+    } catch (error) {
+        console.error('更新使用次数错误:', error);
+    }
+}
+
 // 健康检查
 app.get('/', (req, res) => {
-    res.send('Lark Redeem Proxy is running\n');
+    res.send('Lark Redeem Proxy is running');
 });
 
 const port = process.env.PORT || 3000;
